@@ -2,6 +2,7 @@
 #require('proj4')   #needed for CRS definitions
 #require('raster')  #creates raster objects
 #require('rts')     #creates raster time series (RTS) objects
+#require('data.table')
 
 
 ARL_read_main_header <- function(f){
@@ -199,3 +200,110 @@ ARL_read <- function(file_to_read,var_i_want,ll,ur,latlon=TRUE, verbose=FALSE){
 		return(rts_object)
 	}
 }
+
+
+
+
+
+#' Read an FSL formatted radiosonde file
+#'
+#' @param file_name name of the file to read
+#' @param xlim left and right longitude limits to extract
+#' @param ylim lower and upper latitude limits to extract
+#' @return a data table is returned with launch timestamp and location, altitude, pressure, temperature, and U and V wind components
+#' @examples
+#' file_name <- 'roab_soundings43993.txt'
+#' DT <- FSL_read(file_name,xlim=c(-125,-65),ylim=c(20,50))
+#' sub_DT <- subset(DT, tstamp == DT$tstamp[1] )
+#' plot(sub$lon, sub$lat)
+#' map("worldHires",add=True)
+#' @export
+FSL_read <- function(file_name,xlim=c(-180,180),ylim=c(-90,90)){
+
+  ts_strings <- NULL
+  lats       <- NULL
+  lons       <- NULL
+  agls       <- NULL
+  presses    <- NULL
+  temps      <- NULL
+  Us         <- NULL
+  Vs         <- NULL
+  SIDs       <- NULL
+
+  con  <- file(file_name,open="r")
+
+  while (length(line <- readLines(con, n = 1, warn = FALSE)) > 0) {
+    #line <- readLines(con, n = 1, warn = FALSE)
+    line_type <- substr(line,5,7)
+
+    if(line_type == "254"){  #new sounding
+      hour  <- substr(line,13,14)
+      day   <- substr(line,20,21)
+      month <- substr(line,28,30)
+      year  <- substr(line,35,38)
+      ts_string <- paste0(hour,day,month,year)
+      ts_string <- gsub(" ","0",dt_string)
+    }
+
+    if(line_type == "  1"){  #station ID line
+      WBAN <- substr(line,10,14)
+      WMO  <- substr(line,17,21)
+      lat  <- as.numeric(substr(line,22,28))
+      lat_NS <- substr(line,29,29)
+      if(lat_NS == "S"){
+        lat <- -1*lat
+      }
+      lon  <- as.numeric(substr(line,30,35))
+      lon_EW <- substr(line,36,36)
+      if(lon_EW == "W"){
+        lon <- -1*lon
+      }
+      elev  <- substr(line,37,42)
+      rtime <- substr(line,43,50)
+    }
+
+    if(line_type == "  2"){                   #Sounding check lines
+      n_of_l <- strtoi(substr(line,29,35))    #number of lines in this entry, including header(s)
+      if( (lon>xlim[2]) | (lon<xlim[1]) | (lat>ylim[2]) | (lat<ylim[1]) ){
+        dump <- readLines(con, n = n_of_l - 3) #skip entries outside our domain of interest
+      }
+    }
+
+    if(line_type == "  3"){ #Station ID and other indicators
+      SID      <- substr(line,18,21)     # Station name
+      stype    <- substr(line,38,42)     # Type of sonde used
+      ws_units <- substr(line,43,50)     # wind speed units (ms means tenths of m/s)
+    }
+
+    if( (line_type == "  4") | (line_type == "  5") | (line_type == "  7") | (line_type == "  9") ){ #data level
+      dew_pt     <- substr(line,29,35)          # dewpoint in tenths of deg C
+      wind_dir   <- strtoi(substr(line,36,42))  # wind direction in degrees
+      wind_spd   <- strtoi(substr(line,43,49))  # wind speed check ws_units for units
+      ts_strings <- c(ts_strings,ts_string)
+      SIDs       <- c(SIDs,SID)
+      lats       <- c(lats,lat)
+      lons       <- c(lons,lon)
+      agls       <- c(agls,strtoi(substr(line,15,21)) )
+      presses    <- c(presses, strtoi(substr(line,8,14)) )
+      temps      <- c(temps, strtoi(substr(line,22,28)) )
+      Us         <- c(Us, cos(pi*wind_spd/180) )
+      Vs         <- c(Vs, sin(pi*wind_spd/180) )
+    }
+  }
+
+  close(con)
+  tstamps <- as.POSIXct(ts_strings,tz="GMT",format="%H%d%b%Y")
+  DT <- data.table(tstamp=tstamps,station=SIDs,lat=lats,lon=lons,agl=agls,press=presses,temp=temps,u=Us,v=Vs)
+  return(DT)
+
+}
+
+semilog_func <- function(a,d,L){
+  return( a*(1-exp(-1*d/L) ) )
+}
+#foo <- ARL_read(file,"V10M",ll=lower_left,ur=upper_right,latlon=FALSE)
+#woot <- Variogram(foo[[1]])
+#x <- woot@variogram$distance
+#y <- woot@variogram$gamma
+#zfit <- nls( y~semilog_func(a,x,L),start=list(a=1,L=3e4))
+
